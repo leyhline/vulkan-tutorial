@@ -14,6 +14,14 @@
             },
             "options": {"cwd": "${workspaceFolder}/build"},
             "problemMatcher": "$gcc"
+        },
+        {
+            "label": "cmake configure",
+            "type": "shell",
+            "command": "cmake",
+            "args": [".."],
+            "group": "none",
+            "options": {"cwd": "${workspaceFolder}/build"}
         }
     ]
 }
