@@ -50,15 +50,46 @@ void mainLoop(GLFWwindow *window) {
     }
 }
 
-void cleanUp(GLFWwindow **window) {
+void cleanUp(GLFWwindow **window, VkInstance *vulkanInstance) {
+    vkDestroyInstance(*vulkanInstance, NULL);
     glfwDestroyWindow(*window);
     glfwTerminate();
 }
 
+void createInstance(VkInstance *instance) {
+    VkApplicationInfo appInfo = {};
+    appInfo.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
+    appInfo.pNext = NULL;
+    appInfo.pApplicationName = "Hello Triangle";
+    appInfo.applicationVersion = VK_MAKE_VERSION(1, 0, 0);
+    appInfo.pEngineName = "No Engine";
+    appInfo.engineVersion = VK_MAKE_VERSION(1, 0, 0);
+    appInfo.apiVersion = VK_API_VERSION_1_1;
+    VkInstanceCreateInfo createInfo = {};
+    createInfo.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
+    createInfo.pNext = NULL;
+    createInfo.pApplicationInfo = &appInfo;
+    uint32_t glfwExtensionCount = 0;
+    const char **glfwExtensions;
+    glfwExtensions = glfwGetRequiredInstanceExtensions(&glfwExtensionCount);
+    createInfo.enabledExtensionCount = glfwExtensionCount;
+    createInfo.ppEnabledExtensionNames = glfwExtensions;
+    createInfo.enabledLayerCount = 0;
+    if (vkCreateInstance(&createInfo, NULL, instance) != VK_SUCCESS) {
+        fprintf(stderr, "Vulkan: failed to create instance\n");
+    }
+}
+
+void initVulkan(VkInstance *instance) {
+    createInstance(instance);
+}
+
 int main(const int argc, const char *argv[]) {
     GLFWwindow *window;
+    VkInstance vulkanInstance;
     initWindow(&window);
+    initVulkan(&vulkanInstance);
     mainLoop(window);
-    cleanUp(&window);
+    cleanUp(&window, &vulkanInstance);
     return 0;
 }
