@@ -1,9 +1,20 @@
 #include <stdlib.h>
 #include <stdio.h>
+#include <stdbool.h>
+#include <string.h>
 
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
 
+#ifdef NDEBUG
+    const bool enableValidationLayers = false;
+#else
+    const bool enableValidationLayers = true;
+#endif
+const size_t validationLayersCount = 1;
+const char *const validationLayers[] = {
+    "VK_LAYER_KHRONOS_validation"
+};
 const int WIDTH = 800;
 const int HEIGHT = 600;
 
@@ -22,7 +33,7 @@ void initWindow(GLFWwindow **window) {
         exit(EXIT_FAILURE);
     }
     if (!glfwVulkanSupported()) {
-        fprintf(stderr, "ERROR: Vulkan not supported");
+        fprintf(stderr, "ERROR: Vulkan not supported\n");
         glfwTerminate();
         exit(EXIT_FAILURE);
     }
@@ -56,7 +67,32 @@ void cleanUp(GLFWwindow **window, VkInstance *vulkanInstance) {
     glfwTerminate();
 }
 
+bool checkValidationLayerSupport() {
+    uint32_t layerCount;
+    VkLayerProperties *availableLayers;
+    bool layerFound = false;
+    vkEnumerateInstanceLayerProperties(&layerCount, NULL);
+    availableLayers = (VkLayerProperties *) malloc(layerCount * sizeof(VkLayerProperties));
+    vkEnumerateInstanceLayerProperties(&layerCount, availableLayers);
+    for (size_t j = 0; j < validationLayersCount; ++j) {
+        for (size_t i = 0; i < layerCount; ++i) {
+            if (strcmp(validationLayers[j], availableLayers[i].layerName) == 0) {
+                layerFound = true;
+                break;
+            }
+        }
+        if (!layerFound) {
+            return false;
+        }
+    }
+    free(availableLayers);
+    return true;
+}
+
 void createInstance(VkInstance *instance) {
+    if (enableValidationLayers && !checkValidationLayerSupport()) {
+        fprintf(stderr, "ERROR Vulkan: validation layers requested but not available\n");
+    }
     VkApplicationInfo appInfo = {};
     appInfo.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
     appInfo.pNext = NULL;
@@ -74,14 +110,69 @@ void createInstance(VkInstance *instance) {
     glfwExtensions = glfwGetRequiredInstanceExtensions(&glfwExtensionCount);
     createInfo.enabledExtensionCount = glfwExtensionCount;
     createInfo.ppEnabledExtensionNames = glfwExtensions;
-    createInfo.enabledLayerCount = 0;
+    if (enableValidationLayers) {
+        createInfo.enabledLayerCount = validationLayersCount;
+        createInfo.ppEnabledLayerNames = validationLayers;
+    } else {
+        createInfo.enabledLayerCount = 0;
+    }
     if (vkCreateInstance(&createInfo, NULL, instance) != VK_SUCCESS) {
         fprintf(stderr, "Vulkan: failed to create instance\n");
     }
 }
 
+bool findQueueFamilies(VkPhysicalDevice *device) {
+    uint32_t queueFamilyCount = 0;
+    VkQueueFamilyProperties *queueFamilies;
+    bool graphicsQueueSupported = false;
+    vkGetPhysicalDeviceQueueFamilyProperties(*device, &queueFamilyCount, NULL);
+    queueFamilies = (VkQueueFamilyProperties *) malloc(queueFamilyCount * sizeof(VkQueueFamilyProperties));
+    vkGetPhysicalDeviceQueueFamilyProperties(*device, &queueFamilyCount, queueFamilies);
+    for (size_t i = 0; i < queueFamilyCount; ++i) {
+        if (queueFamilies[i].queueCount > 0 && queueFamilies[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) {
+            graphicsQueueSupported = true;
+            break;
+        }
+    }
+    free(queueFamilies);
+    return graphicsQueueSupported;
+}
+
+bool isDeviceSuitable(VkPhysicalDevice device) {
+    VkPhysicalDeviceProperties deviceProperties;
+    VkPhysicalDeviceFeatures deviceFeatures;
+    vkGetPhysicalDeviceProperties(device, &deviceProperties);
+    vkGetPhysicalDeviceFeatures(device, &deviceFeatures);
+    printf("Vulkan GPU name: %s\n", deviceProperties.deviceName);
+    return findQueueFamilies(&device);
+}
+
+void pickPhysicalDevice(VkInstance *instance, VkPhysicalDevice *physicalDevice) {
+    *physicalDevice = VK_NULL_HANDLE;
+    uint32_t deviceCount = 0;
+    VkPhysicalDevice *devices;
+    vkEnumeratePhysicalDevices(*instance, &deviceCount, NULL);
+    if (deviceCount == 0) {
+        fprintf(stderr, "ERROR Vulkan: failed to find GPUs with Vulkan support\n");
+    }
+    devices = (VkPhysicalDevice *) malloc(deviceCount * sizeof(VkPhysicalDevice));
+    vkEnumeratePhysicalDevices(*instance, &deviceCount, devices);
+    for (size_t i = 0; i < deviceCount; ++i) {
+        if (isDeviceSuitable(devices[i])) {
+            *physicalDevice = devices[i];
+            break;
+        }
+    }
+    if (*physicalDevice == VK_NULL_HANDLE) {
+        fprintf(stderr, "ERROR Vulkan: failed to find suitable GPU\n");
+    }
+    free(devices);
+}
+
 void initVulkan(VkInstance *instance) {
+    VkPhysicalDevice device;
     createInstance(instance);
+    pickPhysicalDevice(instance, &device);
 }
 
 int main(const int argc, const char *argv[]) {
