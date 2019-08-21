@@ -125,16 +125,16 @@ void createInstance(VkInstance *instance) {
     }
 }
 
-bool findGraphicsQueueFamilyIndex(VkPhysicalDevice *device, VkSurfaceKHR *surface, uint32_t *graphicsFamilyIndex) {
+bool findGraphicsQueueFamilyIndex(VkPhysicalDevice device, VkSurfaceKHR *surface, uint32_t *graphicsFamilyIndex) {
     uint32_t queueFamilyCount = 0;
     VkQueueFamilyProperties *queueFamilies;
     bool graphicsQueueSupported = false;
-    vkGetPhysicalDeviceQueueFamilyProperties(*device, &queueFamilyCount, NULL);
+    vkGetPhysicalDeviceQueueFamilyProperties(device, &queueFamilyCount, NULL);
     queueFamilies = (VkQueueFamilyProperties *) malloc(queueFamilyCount * sizeof(VkQueueFamilyProperties));
-    vkGetPhysicalDeviceQueueFamilyProperties(*device, &queueFamilyCount, queueFamilies);
+    vkGetPhysicalDeviceQueueFamilyProperties(device, &queueFamilyCount, queueFamilies);
     for (uint32_t i = 0; i < queueFamilyCount; ++i) {
         VkBool32 presentSupport = false;
-        vkGetPhysicalDeviceSurfaceSupportKHR(*device, i, *surface, &presentSupport);
+        vkGetPhysicalDeviceSurfaceSupportKHR(device, i, *surface, &presentSupport);
         if (queueFamilies[i].queueCount > 0 && queueFamilies[i].queueFlags & VK_QUEUE_GRAPHICS_BIT && presentSupport) {
             graphicsQueueSupported = true;
             *graphicsFamilyIndex = i;
@@ -162,18 +162,48 @@ bool checkDeviceExtensionSupport(VkPhysicalDevice device) {
         }
         requiredExtensionsSupported = requiredExtensionsSupported && currentExtensionSupported;
     }
+    free(availableExtensions);
     return requiredExtensionsSupported;
+}
+
+bool querySwapChainSupport(VkPhysicalDevice physicalDevice, VkSurfaceKHR *surface) {
+    bool swapChainAdequate = false;
+    VkSurfaceCapabilitiesKHR capabilities;
+    uint32_t formatCount = 0;
+    VkSurfaceFormatKHR *formats;
+    uint32_t presentModeCount = 0;
+    VkPresentModeKHR *presentModes;
+    vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physicalDevice, *surface, &capabilities);
+    vkGetPhysicalDeviceSurfaceFormatsKHR(physicalDevice, *surface, &formatCount, NULL);
+    if (formatCount > 0) {
+        formats = (VkSurfaceFormatKHR *) malloc(formatCount * sizeof(VkSurfaceFormatKHR));
+        vkGetPhysicalDeviceSurfaceFormatsKHR(physicalDevice, *surface, &formatCount, formats);
+    }
+    vkGetPhysicalDeviceSurfacePresentModesKHR(physicalDevice, *surface, &presentModeCount, NULL);
+    if (presentModeCount > 0) {
+        presentModes = (VkPresentModeKHR *) malloc(presentModeCount * sizeof(VkPresentModeKHR));
+        vkGetPhysicalDeviceSurfacePresentModesKHR(physicalDevice, *surface, &presentModeCount, presentModes);
+    }
+    swapChainAdequate = (formatCount > 0) && (presentModeCount > 0);
+    free(presentModes);
+    free(formats);
+    return swapChainAdequate;
 }
 
 bool isDeviceSuitable(VkPhysicalDevice device, VkSurfaceKHR *surface) {
     VkPhysicalDeviceProperties deviceProperties;
     VkPhysicalDeviceFeatures deviceFeatures;
     uint32_t graphicsFamilyIndex = 0;
+    bool queueAdequate = findGraphicsQueueFamilyIndex(device, surface, &graphicsFamilyIndex);
     bool extensionsSupported = checkDeviceExtensionSupport(device);
+    bool swapChainAdequate = false;
+    if (extensionsSupported) {
+        swapChainAdequate = querySwapChainSupport(device, surface);
+    }
     vkGetPhysicalDeviceProperties(device, &deviceProperties);
     vkGetPhysicalDeviceFeatures(device, &deviceFeatures);
     printf("Vulkan GPU name: %s\n", deviceProperties.deviceName);
-    return findGraphicsQueueFamilyIndex(&device, surface, &graphicsFamilyIndex) && extensionsSupported;
+    return queueAdequate && extensionsSupported && swapChainAdequate;
 }
 
 void pickPhysicalDevice(VkInstance *instance, VkSurfaceKHR *surface, VkPhysicalDevice *physicalDevice) {
@@ -198,7 +228,7 @@ void pickPhysicalDevice(VkInstance *instance, VkSurfaceKHR *surface, VkPhysicalD
     free(devices);
 }
 
-void createLogicalDevice(VkPhysicalDevice *physicalDevice, VkSurfaceKHR *surface, VkDevice *logicalDevice, VkQueue *presentQueue) {
+void createLogicalDevice(VkPhysicalDevice physicalDevice, VkSurfaceKHR *surface, VkDevice *logicalDevice, VkQueue *presentQueue) {
     uint32_t graphicsFamilyIndex = 0;
     if (!findGraphicsQueueFamilyIndex(physicalDevice, surface, &graphicsFamilyIndex)) {
         fprintf(stderr, "ERROR Vulkan: Could not find graphics queue\n");
@@ -223,7 +253,7 @@ void createLogicalDevice(VkPhysicalDevice *physicalDevice, VkSurfaceKHR *surface
     }
     createInfo.enabledExtensionCount = deviceExtensionsCount;
     createInfo.ppEnabledExtensionNames = deviceExtensions;
-    if (vkCreateDevice(*physicalDevice, &createInfo, NULL, logicalDevice) != VK_SUCCESS) {
+    if (vkCreateDevice(physicalDevice, &createInfo, NULL, logicalDevice) != VK_SUCCESS) {
         fprintf(stderr, "ERROR Vulkan: failed to create logical device\n");
     }
     vkGetDeviceQueue(*logicalDevice, graphicsFamilyIndex, 0, presentQueue);
@@ -241,7 +271,8 @@ void initVulkan(VkInstance *instance, GLFWwindow **window, VkDevice *logicalDevi
     createInstance(instance);
     createSurface(instance, window, surface);
     pickPhysicalDevice(instance, surface, &physicalDevice);
-    createLogicalDevice(&physicalDevice, surface, logicalDevice, &presentQueue);
+    querySwapChainSupport(physicalDevice, surface);
+    createLogicalDevice(physicalDevice, surface, logicalDevice, &presentQueue);
 }
 
 int main(const int argc, const char *argv[]) {
