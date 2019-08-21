@@ -11,9 +11,13 @@
 #else
     const bool enableValidationLayers = true;
 #endif
-const size_t validationLayersCount = 1;
+const uint32_t validationLayersCount = 1;
 const char *const validationLayers[] = {
     "VK_LAYER_KHRONOS_validation"
+};
+const uint32_t deviceExtensionsCount = 1;
+const char *const deviceExtensions[] = {
+    VK_KHR_SWAPCHAIN_EXTENSION_NAME
 };
 const int WIDTH = 800;
 const int HEIGHT = 600;
@@ -45,7 +49,7 @@ void initWindow(GLFWwindow **window) {
            GLFW_VERSION_REVISION);
     printf("GLFW library version: %u.%u.%u\n", major, minor, revision);
     printf("GLFW library string:  %s\n", glfwGetVersionString());
-    //glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+    glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
     glfwWindowHint(GLFW_FOCUSED, GLFW_FALSE);
     *window = glfwCreateWindow(WIDTH, HEIGHT, "Vulkan Playground", NULL, NULL);
     if (!window) {
@@ -61,7 +65,9 @@ void mainLoop(GLFWwindow *window) {
     }
 }
 
-void cleanUp(GLFWwindow **window, VkInstance *vulkanInstance) {
+void cleanUp(GLFWwindow **window, VkInstance *vulkanInstance, VkDevice *device, VkSurfaceKHR *surface) {
+    vkDestroyDevice(*device, NULL);
+    vkDestroySurfaceKHR(*vulkanInstance, *surface, NULL);
     vkDestroyInstance(*vulkanInstance, NULL);
     glfwDestroyWindow(*window);
     glfwTerminate();
@@ -74,8 +80,8 @@ bool checkValidationLayerSupport() {
     vkEnumerateInstanceLayerProperties(&layerCount, NULL);
     availableLayers = (VkLayerProperties *) malloc(layerCount * sizeof(VkLayerProperties));
     vkEnumerateInstanceLayerProperties(&layerCount, availableLayers);
-    for (size_t j = 0; j < validationLayersCount; ++j) {
-        for (size_t i = 0; i < layerCount; ++i) {
+    for (uint32_t j = 0; j < validationLayersCount; ++j) {
+        for (uint32_t i = 0; i < layerCount; ++i) {
             if (strcmp(validationLayers[j], availableLayers[i].layerName) == 0) {
                 layerFound = true;
                 break;
@@ -95,7 +101,6 @@ void createInstance(VkInstance *instance) {
     }
     VkApplicationInfo appInfo = {};
     appInfo.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
-    appInfo.pNext = NULL;
     appInfo.pApplicationName = "Hello Triangle";
     appInfo.applicationVersion = VK_MAKE_VERSION(1, 0, 0);
     appInfo.pEngineName = "No Engine";
@@ -103,7 +108,6 @@ void createInstance(VkInstance *instance) {
     appInfo.apiVersion = VK_API_VERSION_1_1;
     VkInstanceCreateInfo createInfo = {};
     createInfo.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
-    createInfo.pNext = NULL;
     createInfo.pApplicationInfo = &appInfo;
     uint32_t glfwExtensionCount = 0;
     const char **glfwExtensions;
@@ -121,16 +125,19 @@ void createInstance(VkInstance *instance) {
     }
 }
 
-bool findQueueFamilies(VkPhysicalDevice *device) {
+bool findGraphicsQueueFamilyIndex(VkPhysicalDevice *device, VkSurfaceKHR *surface, uint32_t *graphicsFamilyIndex) {
     uint32_t queueFamilyCount = 0;
     VkQueueFamilyProperties *queueFamilies;
     bool graphicsQueueSupported = false;
     vkGetPhysicalDeviceQueueFamilyProperties(*device, &queueFamilyCount, NULL);
     queueFamilies = (VkQueueFamilyProperties *) malloc(queueFamilyCount * sizeof(VkQueueFamilyProperties));
     vkGetPhysicalDeviceQueueFamilyProperties(*device, &queueFamilyCount, queueFamilies);
-    for (size_t i = 0; i < queueFamilyCount; ++i) {
-        if (queueFamilies[i].queueCount > 0 && queueFamilies[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) {
+    for (uint32_t i = 0; i < queueFamilyCount; ++i) {
+        VkBool32 presentSupport = false;
+        vkGetPhysicalDeviceSurfaceSupportKHR(*device, i, *surface, &presentSupport);
+        if (queueFamilies[i].queueCount > 0 && queueFamilies[i].queueFlags & VK_QUEUE_GRAPHICS_BIT && presentSupport) {
             graphicsQueueSupported = true;
+            *graphicsFamilyIndex = i;
             break;
         }
     }
@@ -138,16 +145,38 @@ bool findQueueFamilies(VkPhysicalDevice *device) {
     return graphicsQueueSupported;
 }
 
-bool isDeviceSuitable(VkPhysicalDevice device) {
+bool checkDeviceExtensionSupport(VkPhysicalDevice device) {
+    bool requiredExtensionsSupported = true;
+    uint32_t extensionCount;
+    VkExtensionProperties *availableExtensions;
+    vkEnumerateDeviceExtensionProperties(device, NULL, &extensionCount, NULL);
+    availableExtensions = (VkExtensionProperties *) malloc(extensionCount * sizeof(VkExtensionProperties));
+    vkEnumerateDeviceExtensionProperties(device, NULL, &extensionCount, availableExtensions);
+    for (uint32_t j = 0; j < deviceExtensionsCount; ++j) {
+        bool currentExtensionSupported = false;
+        for (uint32_t i = 0; i < extensionCount; ++i) {
+            if (strcmp(deviceExtensions[j], availableExtensions[i].extensionName) == 0) {
+                currentExtensionSupported = true;
+                break;
+            }
+        }
+        requiredExtensionsSupported = requiredExtensionsSupported && currentExtensionSupported;
+    }
+    return requiredExtensionsSupported;
+}
+
+bool isDeviceSuitable(VkPhysicalDevice device, VkSurfaceKHR *surface) {
     VkPhysicalDeviceProperties deviceProperties;
     VkPhysicalDeviceFeatures deviceFeatures;
+    uint32_t graphicsFamilyIndex = 0;
+    bool extensionsSupported = checkDeviceExtensionSupport(device);
     vkGetPhysicalDeviceProperties(device, &deviceProperties);
     vkGetPhysicalDeviceFeatures(device, &deviceFeatures);
     printf("Vulkan GPU name: %s\n", deviceProperties.deviceName);
-    return findQueueFamilies(&device);
+    return findGraphicsQueueFamilyIndex(&device, surface, &graphicsFamilyIndex) && extensionsSupported;
 }
 
-void pickPhysicalDevice(VkInstance *instance, VkPhysicalDevice *physicalDevice) {
+void pickPhysicalDevice(VkInstance *instance, VkSurfaceKHR *surface, VkPhysicalDevice *physicalDevice) {
     *physicalDevice = VK_NULL_HANDLE;
     uint32_t deviceCount = 0;
     VkPhysicalDevice *devices;
@@ -157,8 +186,8 @@ void pickPhysicalDevice(VkInstance *instance, VkPhysicalDevice *physicalDevice) 
     }
     devices = (VkPhysicalDevice *) malloc(deviceCount * sizeof(VkPhysicalDevice));
     vkEnumeratePhysicalDevices(*instance, &deviceCount, devices);
-    for (size_t i = 0; i < deviceCount; ++i) {
-        if (isDeviceSuitable(devices[i])) {
+    for (uint32_t i = 0; i < deviceCount; ++i) {
+        if (isDeviceSuitable(devices[i], surface)) {
             *physicalDevice = devices[i];
             break;
         }
@@ -169,18 +198,60 @@ void pickPhysicalDevice(VkInstance *instance, VkPhysicalDevice *physicalDevice) 
     free(devices);
 }
 
-void initVulkan(VkInstance *instance) {
-    VkPhysicalDevice device;
+void createLogicalDevice(VkPhysicalDevice *physicalDevice, VkSurfaceKHR *surface, VkDevice *logicalDevice, VkQueue *presentQueue) {
+    uint32_t graphicsFamilyIndex = 0;
+    if (!findGraphicsQueueFamilyIndex(physicalDevice, surface, &graphicsFamilyIndex)) {
+        fprintf(stderr, "ERROR Vulkan: Could not find graphics queue\n");
+    }
+    VkDeviceQueueCreateInfo queueCreateInfo = {};
+    queueCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
+    queueCreateInfo.queueFamilyIndex = graphicsFamilyIndex;
+    queueCreateInfo.queueCount = 1;
+    float queuePriority = 1.0f;
+    queueCreateInfo.pQueuePriorities = &queuePriority;
+    VkPhysicalDeviceFeatures deviceFeatures = {};
+    VkDeviceCreateInfo createInfo = {};
+    createInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
+    createInfo.pQueueCreateInfos = &queueCreateInfo;
+    createInfo.queueCreateInfoCount = 1;
+    createInfo.pEnabledFeatures = &deviceFeatures;
+    if (enableValidationLayers) {
+        createInfo.enabledLayerCount = validationLayersCount;
+        createInfo.ppEnabledLayerNames = validationLayers;
+    } else {
+        createInfo.enabledLayerCount = 0;
+    }
+    createInfo.enabledExtensionCount = deviceExtensionsCount;
+    createInfo.ppEnabledExtensionNames = deviceExtensions;
+    if (vkCreateDevice(*physicalDevice, &createInfo, NULL, logicalDevice) != VK_SUCCESS) {
+        fprintf(stderr, "ERROR Vulkan: failed to create logical device\n");
+    }
+    vkGetDeviceQueue(*logicalDevice, graphicsFamilyIndex, 0, presentQueue);
+}
+
+void createSurface(VkInstance *instance, GLFWwindow **window, VkSurfaceKHR *surface) {
+    if (glfwCreateWindowSurface(*instance, *window, NULL, surface) != VK_SUCCESS) {
+        fprintf(stderr, "ERROR Vulkan: failed to create window surface\n");
+    }
+}
+
+void initVulkan(VkInstance *instance, GLFWwindow **window, VkDevice *logicalDevice, VkSurfaceKHR *surface) {
+    VkPhysicalDevice physicalDevice;
+    VkQueue presentQueue;
     createInstance(instance);
-    pickPhysicalDevice(instance, &device);
+    createSurface(instance, window, surface);
+    pickPhysicalDevice(instance, surface, &physicalDevice);
+    createLogicalDevice(&physicalDevice, surface, logicalDevice, &presentQueue);
 }
 
 int main(const int argc, const char *argv[]) {
     GLFWwindow *window;
     VkInstance vulkanInstance;
+    VkDevice device;
+    VkSurfaceKHR surface;
     initWindow(&window);
-    initVulkan(&vulkanInstance);
+    initVulkan(&vulkanInstance, &window, &device, &surface);
     mainLoop(window);
-    cleanUp(&window, &vulkanInstance);
+    cleanUp(&window, &vulkanInstance, &device, &surface);
     return 0;
 }
