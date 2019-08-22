@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <stdbool.h>
 #include <string.h>
+#include <limits.h>
 
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
@@ -65,7 +66,8 @@ void mainLoop(GLFWwindow *window) {
     }
 }
 
-void cleanUp(GLFWwindow **window, VkInstance *vulkanInstance, VkDevice *device, VkSurfaceKHR *surface) {
+void cleanUp(GLFWwindow **window, VkInstance *vulkanInstance, VkDevice *device, VkSurfaceKHR *surface, VkSwapchainKHR *swapchain) {
+    vkDestroySwapchainKHR(*device, *swapchain, NULL);
     vkDestroyDevice(*device, NULL);
     vkDestroySurfaceKHR(*vulkanInstance, *surface, NULL);
     vkDestroyInstance(*vulkanInstance, NULL);
@@ -166,25 +168,92 @@ bool checkDeviceExtensionSupport(VkPhysicalDevice device) {
     return requiredExtensionsSupported;
 }
 
-bool querySwapChainSupport(VkPhysicalDevice physicalDevice, VkSurfaceKHR *surface) {
+VkSurfaceFormatKHR chooseSwapSurfaceFormat(VkSurfaceFormatKHR *availableFormats, uint32_t formatCount) {
+    for (uint32_t i = 0; i < formatCount; ++i) {
+        if (   availableFormats[i].format == VK_FORMAT_B8G8R8A8_UNORM 
+            && availableFormats[i].colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
+            return availableFormats[i];
+        }
+    }
+    return availableFormats[0];
+}
+
+VkPresentModeKHR chooseSwapPresentMode(VkPresentModeKHR *availableModes, uint32_t presentModeCount) {
+    for (uint32_t i = 0; i < presentModeCount; ++i) {
+        if (availableModes[i] == VK_PRESENT_MODE_MAILBOX_KHR) {
+            return availableModes[i];
+        }
+    }
+    return VK_PRESENT_MODE_FIFO_KHR;
+}
+
+uint32_t uint32_min(uint32_t x, uint32_t y) {
+    return x < y ? x : y;
+}
+
+uint32_t uint32_max(uint32_t x, uint32_t y) {
+    return x < y ? y : x;
+}
+
+VkExtent2D chooseSwapExtend(VkSurfaceCapabilitiesKHR *capabilities) {
+    if (capabilities->currentExtent.width != UINT32_MAX) {
+        return capabilities->currentExtent;
+    } else {
+        VkExtent2D actualExtend;
+        actualExtend.width = uint32_max(capabilities->minImageExtent.width, uint32_min(capabilities->maxImageExtent.width, WIDTH));
+        actualExtend.height = uint32_max(capabilities->minImageExtent.height, uint32_min(capabilities->maxImageExtent.height, HEIGHT));
+        return actualExtend;
+    }
+}
+
+bool querySwapChainSupport(VkPhysicalDevice physicalDevice, VkSurfaceKHR *surface, VkSwapchainCreateInfoKHR *swapchainCreateInfo) {
     bool swapChainAdequate = false;
     VkSurfaceCapabilitiesKHR capabilities;
+    VkExtent2D imageExtend;
+    uint32_t imageCount = 0;
     uint32_t formatCount = 0;
     VkSurfaceFormatKHR *formats;
+    VkSurfaceFormatKHR bestFormat;
     uint32_t presentModeCount = 0;
     VkPresentModeKHR *presentModes;
+    VkPresentModeKHR bestPresentMode;
     vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physicalDevice, *surface, &capabilities);
+    imageExtend = chooseSwapExtend(&capabilities);
+    imageCount = capabilities.minImageCount + 1;
+    if (capabilities.maxImageCount > 0 && imageCount > capabilities.maxImageCount) {
+        imageCount = capabilities.maxImageCount;
+    }
     vkGetPhysicalDeviceSurfaceFormatsKHR(physicalDevice, *surface, &formatCount, NULL);
     if (formatCount > 0) {
         formats = (VkSurfaceFormatKHR *) malloc(formatCount * sizeof(VkSurfaceFormatKHR));
         vkGetPhysicalDeviceSurfaceFormatsKHR(physicalDevice, *surface, &formatCount, formats);
+        bestFormat = chooseSwapSurfaceFormat(formats, formatCount);
     }
     vkGetPhysicalDeviceSurfacePresentModesKHR(physicalDevice, *surface, &presentModeCount, NULL);
     if (presentModeCount > 0) {
         presentModes = (VkPresentModeKHR *) malloc(presentModeCount * sizeof(VkPresentModeKHR));
         vkGetPhysicalDeviceSurfacePresentModesKHR(physicalDevice, *surface, &presentModeCount, presentModes);
+        bestPresentMode = chooseSwapPresentMode(presentModes, presentModeCount);
     }
     swapChainAdequate = (formatCount > 0) && (presentModeCount > 0);
+    if (swapchainCreateInfo != NULL) {
+        swapchainCreateInfo->sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
+        swapchainCreateInfo->surface = *surface;
+        swapchainCreateInfo->minImageCount = imageCount;
+        swapchainCreateInfo->imageFormat = bestFormat.format;
+        swapchainCreateInfo->imageColorSpace = bestFormat.colorSpace;
+        swapchainCreateInfo->imageExtent = imageExtend;
+        swapchainCreateInfo->imageArrayLayers = 1;
+        swapchainCreateInfo->imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+        swapchainCreateInfo->imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        swapchainCreateInfo->queueFamilyIndexCount = 0;
+        swapchainCreateInfo->pQueueFamilyIndices = NULL;
+        swapchainCreateInfo->preTransform = capabilities.currentTransform;
+        swapchainCreateInfo->compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
+        swapchainCreateInfo->presentMode = bestPresentMode;
+        swapchainCreateInfo->clipped = VK_TRUE;
+        swapchainCreateInfo->oldSwapchain = VK_NULL_HANDLE;
+    }
     free(presentModes);
     free(formats);
     return swapChainAdequate;
@@ -198,7 +267,7 @@ bool isDeviceSuitable(VkPhysicalDevice device, VkSurfaceKHR *surface) {
     bool extensionsSupported = checkDeviceExtensionSupport(device);
     bool swapChainAdequate = false;
     if (extensionsSupported) {
-        swapChainAdequate = querySwapChainSupport(device, surface);
+        swapChainAdequate = querySwapChainSupport(device, surface, NULL);
     }
     vkGetPhysicalDeviceProperties(device, &deviceProperties);
     vkGetPhysicalDeviceFeatures(device, &deviceFeatures);
@@ -265,14 +334,18 @@ void createSurface(VkInstance *instance, GLFWwindow **window, VkSurfaceKHR *surf
     }
 }
 
-void initVulkan(VkInstance *instance, GLFWwindow **window, VkDevice *logicalDevice, VkSurfaceKHR *surface) {
+void initVulkan(VkInstance *instance, GLFWwindow **window, VkDevice *logicalDevice, VkSurfaceKHR *surface, VkSwapchainKHR *swapchain) {
     VkPhysicalDevice physicalDevice;
     VkQueue presentQueue;
+    VkSwapchainCreateInfoKHR swapchainCreateInfo;
     createInstance(instance);
     createSurface(instance, window, surface);
     pickPhysicalDevice(instance, surface, &physicalDevice);
-    querySwapChainSupport(physicalDevice, surface);
     createLogicalDevice(physicalDevice, surface, logicalDevice, &presentQueue);
+    querySwapChainSupport(physicalDevice, surface, &swapchainCreateInfo);
+    if (vkCreateSwapchainKHR(*logicalDevice, &swapchainCreateInfo, NULL, swapchain) != VK_SUCCESS) {
+        fprintf(stderr, "ERROR Vulkan: failed to create swap chain\n");
+    }
 }
 
 int main(const int argc, const char *argv[]) {
@@ -280,9 +353,17 @@ int main(const int argc, const char *argv[]) {
     VkInstance vulkanInstance;
     VkDevice device;
     VkSurfaceKHR surface;
+    VkSwapchainKHR swapchain;
     initWindow(&window);
-    initVulkan(&vulkanInstance, &window, &device, &surface);
+    initVulkan(&vulkanInstance, &window, &device, &surface, &swapchain);
+
+    uint32_t imageCount = 0;
+    VkImage *images;
+    vkGetSwapchainImagesKHR(device, swapchain, &imageCount, NULL);
+    images = (VkImage *) malloc(imageCount * sizeof(VkImage));
+    vkGetSwapchainImagesKHR(device, swapchain, &imageCount, images);
+
     mainLoop(window);
-    cleanUp(&window, &vulkanInstance, &device, &surface);
+    cleanUp(&window, &vulkanInstance, &device, &surface, &swapchain);
     return 0;
 }
