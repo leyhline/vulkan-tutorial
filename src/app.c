@@ -3,6 +3,7 @@
 #include <stdbool.h>
 #include <string.h>
 #include <limits.h>
+#include <assert.h>
 
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
@@ -30,6 +31,32 @@ static void error_callback(int error, const char *description) {
 static void key_callback(GLFWwindow *window, int key, int scancode, int action, int mods) {
     if (action == GLFW_RELEASE) printf("Key pressed: %i\n", key);
     if (key == GLFW_KEY_ESCAPE && action == GLFW_PRESS) glfwSetWindowShouldClose(window, GLFW_TRUE);
+}
+
+size_t readShaderFromFile(const char filename[], uint32_t **shaderContent) {
+    FILE *fp;
+    size_t filesize;
+    char *buffer;
+    int offset;
+    size_t resultsize;
+    fp = fopen(filename, "rb");
+    if (fp == NULL) {
+        fprintf(stderr, "ERROR opening file: %s\n", filename);
+        return -1;
+    }
+    fseek(fp, 0, SEEK_END);
+    filesize = ftell(fp);
+    offset = (4 - (filesize % 4)) % 4;
+    rewind(fp);
+    buffer = (char *) malloc((filesize + offset) * sizeof(char));
+    resultsize = fread(buffer, 1, filesize, fp);
+    if (resultsize != filesize) {
+        fprintf(stderr, "ERROR reading file: %s\n", *filename);
+    }
+    memset(buffer + filesize, 0, offset);
+    fclose(fp);
+    *shaderContent = (uint32_t*) buffer;
+    return filesize + offset;
 }
 
 void initWindow(GLFWwindow **window) {
@@ -334,6 +361,73 @@ void createSurface(VkInstance *instance, GLFWwindow **window, VkSurfaceKHR *surf
     }
 }
 
+void createImageViews(VkDevice *device, VkImage *images, uint32_t imageCount, VkFormat imageFormat, VkImageView *imageViews) {
+    imageViews = (VkImageView *) malloc(imageCount * sizeof(VkImageView));
+    for (uint32_t i = 0; i < imageCount; ++i) {
+        VkImageViewCreateInfo createInfo = {};
+        createInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        createInfo.image = images[i];
+        createInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        createInfo.format = imageFormat;
+        createInfo.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
+        createInfo.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
+        createInfo.components.b = VK_COMPONENT_SWIZZLE_IDENTITY;
+        createInfo.components.a = VK_COMPONENT_SWIZZLE_IDENTITY;
+        createInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        createInfo.subresourceRange.baseMipLevel = 0;
+        createInfo.subresourceRange.levelCount = 1;
+        createInfo.subresourceRange.baseArrayLayer = 0;
+        createInfo.subresourceRange.layerCount = 1;
+        if (vkCreateImageView(*device, &createInfo, NULL, &imageViews[i]) != VK_SUCCESS) {
+            fprintf(stderr, "ERROR Vulkan: failed to create image views");
+        }
+        vkDestroyImageView(*device, imageViews[i], NULL);
+    }
+    free(imageViews);
+}
+
+VkShaderModule createShaderModule(VkDevice device, const uint32_t *shaderContent, size_t shaderSize) {
+    VkShaderModule shaderModule;
+    VkShaderModuleCreateInfo createInfo = {};
+    createInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+    assert(shaderSize % 4 == 0);
+    createInfo.codeSize = shaderSize;
+    assert (shaderContent != NULL);
+    createInfo.pCode = shaderContent;
+    if (vkCreateShaderModule(device, &createInfo, NULL, &shaderModule) != VK_SUCCESS) {
+        fprintf(stderr, "ERROR Vulkan: failed to create shader module");
+    }
+    return shaderModule;
+}
+
+void createGraphicsPipeline(VkDevice device) {
+    uint32_t *vertexShader;
+    size_t vertexShaderSize;
+    VkShaderModule vertexShaderModule;
+    VkPipelineShaderStageCreateInfo vertShaderStageInfo = {};
+    uint32_t *fragmentShader;
+    size_t fragmentShaderSize;
+    VkShaderModule fragmentShaderModule;
+    VkPipelineShaderStageCreateInfo fragShaderStageInfo = {};
+    vertexShaderSize = readShaderFromFile("shaders/vert.spv", &vertexShader);
+    vertexShaderModule = createShaderModule(device, vertexShader, vertexShaderSize);
+    vertShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    vertShaderStageInfo.stage = VK_SHADER_STAGE_VERTEX_BIT;
+    vertShaderStageInfo.module = vertexShaderModule;
+    vertShaderStageInfo.pName = "main";
+    fragmentShaderSize = readShaderFromFile("shaders/frag.spv", &fragmentShader);
+    fragmentShaderModule = createShaderModule(device, fragmentShader, fragmentShaderSize);
+    fragShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    fragShaderStageInfo.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+    fragShaderStageInfo.module = fragmentShaderModule;
+    fragShaderStageInfo.pName = "main";
+    VkPipelineShaderStageCreateInfo shaderStages[] = {vertShaderStageInfo, fragShaderStageInfo};
+    vkDestroyShaderModule(device, vertexShaderModule, NULL);
+    vkDestroyShaderModule(device, fragmentShaderModule, NULL);
+    free(vertexShader);
+    free(fragmentShader);
+}
+
 void initVulkan(VkInstance *instance, GLFWwindow **window, VkDevice *logicalDevice, VkSurfaceKHR *surface, VkSwapchainKHR *swapchain) {
     VkPhysicalDevice physicalDevice;
     VkQueue presentQueue;
@@ -346,6 +440,7 @@ void initVulkan(VkInstance *instance, GLFWwindow **window, VkDevice *logicalDevi
     if (vkCreateSwapchainKHR(*logicalDevice, &swapchainCreateInfo, NULL, swapchain) != VK_SUCCESS) {
         fprintf(stderr, "ERROR Vulkan: failed to create swap chain\n");
     }
+    createGraphicsPipeline(*logicalDevice);
 }
 
 int main(const int argc, const char *argv[]) {

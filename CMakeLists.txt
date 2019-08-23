@@ -20,6 +20,9 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(glfw)
 
+configure_file("shaders/vert.spv" "shaders/vert.spv" COPYONLY)
+configure_file("shaders/frag.spv" "shaders/frag.spv" COPYONLY)
+
 add_executable(app src/app.c)
 target_link_libraries(
     app
