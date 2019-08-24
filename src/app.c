@@ -24,6 +24,33 @@ const char *const deviceExtensions[] = {
 const int WIDTH = 800;
 const int HEIGHT = 600;
 
+typedef struct {
+    VkInstance instance;
+    VkDevice device;
+    VkPhysicalDevice physicalDevice;
+    VkSurfaceKHR surface;
+} SurfaceAndDevice;
+
+typedef struct {
+    VkSwapchainKHR swapchain;
+    VkExtent2D imageExtent;
+    VkFormat format;
+    uint32_t imageCount;
+    VkImage *images;
+    VkImageView *imageViews;
+} SwapchainAndViews;
+
+typedef struct {
+    VkRenderPass renderPass;
+    VkPipelineLayout pipelineLayout;
+    VkPipeline pipeline;
+} Pipeline;
+
+typedef struct {
+    VkFramebuffer *framebuffers;
+    VkCommandPool commandPool;
+} Buffers;
+
 static void error_callback(int error, const char *description) {
     fprintf(stderr, "Error: %s\n", description);
 }
@@ -93,15 +120,6 @@ void mainLoop(GLFWwindow *window) {
     }
 }
 
-void cleanUp(GLFWwindow **window, VkInstance *vulkanInstance, VkDevice *device, VkSurfaceKHR *surface, VkSwapchainKHR *swapchain) {
-    vkDestroySwapchainKHR(*device, *swapchain, NULL);
-    vkDestroyDevice(*device, NULL);
-    vkDestroySurfaceKHR(*vulkanInstance, *surface, NULL);
-    vkDestroyInstance(*vulkanInstance, NULL);
-    glfwDestroyWindow(*window);
-    glfwTerminate();
-}
-
 bool checkValidationLayerSupport() {
     uint32_t layerCount;
     VkLayerProperties *availableLayers;
@@ -124,7 +142,7 @@ bool checkValidationLayerSupport() {
     return true;
 }
 
-void createInstance(VkInstance *instance) {
+void createInstance(SurfaceAndDevice *surfaceAndDevice) {
     if (enableValidationLayers && !checkValidationLayerSupport()) {
         fprintf(stderr, "ERROR Vulkan: validation layers requested but not available\n");
     }
@@ -149,12 +167,14 @@ void createInstance(VkInstance *instance) {
     } else {
         createInfo.enabledLayerCount = 0;
     }
-    if (vkCreateInstance(&createInfo, NULL, instance) != VK_SUCCESS) {
-        fprintf(stderr, "Vulkan: failed to create instance\n");
+    if (vkCreateInstance(&createInfo, NULL, &surfaceAndDevice->instance) != VK_SUCCESS) {
+        fprintf(stderr, "ERROR Vulkan: failed to create instance\n");
+    } else {
+        printf("INFO Vulkan: created instance\n");
     }
 }
 
-bool findGraphicsQueueFamilyIndex(VkPhysicalDevice device, VkSurfaceKHR *surface, uint32_t *graphicsFamilyIndex) {
+bool findGraphicsQueueFamilyIndex(VkPhysicalDevice device, VkSurfaceKHR surface, uint32_t *graphicsFamilyIndex) {
     uint32_t queueFamilyCount = 0;
     VkQueueFamilyProperties *queueFamilies;
     bool graphicsQueueSupported = false;
@@ -163,7 +183,7 @@ bool findGraphicsQueueFamilyIndex(VkPhysicalDevice device, VkSurfaceKHR *surface
     vkGetPhysicalDeviceQueueFamilyProperties(device, &queueFamilyCount, queueFamilies);
     for (uint32_t i = 0; i < queueFamilyCount; ++i) {
         VkBool32 presentSupport = false;
-        vkGetPhysicalDeviceSurfaceSupportKHR(device, i, *surface, &presentSupport);
+        vkGetPhysicalDeviceSurfaceSupportKHR(device, i, surface, &presentSupport);
         if (queueFamilies[i].queueCount > 0 && queueFamilies[i].queueFlags & VK_QUEUE_GRAPHICS_BIT && presentSupport) {
             graphicsQueueSupported = true;
             *graphicsFamilyIndex = i;
@@ -233,10 +253,10 @@ VkExtent2D chooseSwapExtend(VkSurfaceCapabilitiesKHR *capabilities) {
     }
 }
 
-bool querySwapChainSupport(VkPhysicalDevice physicalDevice, VkSurfaceKHR *surface, VkSwapchainCreateInfoKHR *swapchainCreateInfo) {
+bool querySwapChainSupport(VkPhysicalDevice physicalDevice, VkSurfaceKHR surface, VkSwapchainCreateInfoKHR *createInfo) {
     bool swapChainAdequate = false;
     VkSurfaceCapabilitiesKHR capabilities;
-    VkExtent2D imageExtend;
+    VkExtent2D imageExtent;
     uint32_t imageCount = 0;
     uint32_t formatCount = 0;
     VkSurfaceFormatKHR *formats;
@@ -244,49 +264,61 @@ bool querySwapChainSupport(VkPhysicalDevice physicalDevice, VkSurfaceKHR *surfac
     uint32_t presentModeCount = 0;
     VkPresentModeKHR *presentModes;
     VkPresentModeKHR bestPresentMode;
-    vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physicalDevice, *surface, &capabilities);
-    imageExtend = chooseSwapExtend(&capabilities);
+    vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physicalDevice, surface, &capabilities);
+    imageExtent = chooseSwapExtend(&capabilities);
     imageCount = capabilities.minImageCount + 1;
     if (capabilities.maxImageCount > 0 && imageCount > capabilities.maxImageCount) {
         imageCount = capabilities.maxImageCount;
     }
-    vkGetPhysicalDeviceSurfaceFormatsKHR(physicalDevice, *surface, &formatCount, NULL);
+    vkGetPhysicalDeviceSurfaceFormatsKHR(physicalDevice, surface, &formatCount, NULL);
     if (formatCount > 0) {
         formats = (VkSurfaceFormatKHR *) malloc(formatCount * sizeof(VkSurfaceFormatKHR));
-        vkGetPhysicalDeviceSurfaceFormatsKHR(physicalDevice, *surface, &formatCount, formats);
+        vkGetPhysicalDeviceSurfaceFormatsKHR(physicalDevice, surface, &formatCount, formats);
         bestFormat = chooseSwapSurfaceFormat(formats, formatCount);
     }
-    vkGetPhysicalDeviceSurfacePresentModesKHR(physicalDevice, *surface, &presentModeCount, NULL);
+    vkGetPhysicalDeviceSurfacePresentModesKHR(physicalDevice, surface, &presentModeCount, NULL);
     if (presentModeCount > 0) {
         presentModes = (VkPresentModeKHR *) malloc(presentModeCount * sizeof(VkPresentModeKHR));
-        vkGetPhysicalDeviceSurfacePresentModesKHR(physicalDevice, *surface, &presentModeCount, presentModes);
+        vkGetPhysicalDeviceSurfacePresentModesKHR(physicalDevice, surface, &presentModeCount, presentModes);
         bestPresentMode = chooseSwapPresentMode(presentModes, presentModeCount);
     }
     swapChainAdequate = (formatCount > 0) && (presentModeCount > 0);
-    if (swapchainCreateInfo != NULL) {
-        swapchainCreateInfo->sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
-        swapchainCreateInfo->surface = *surface;
-        swapchainCreateInfo->minImageCount = imageCount;
-        swapchainCreateInfo->imageFormat = bestFormat.format;
-        swapchainCreateInfo->imageColorSpace = bestFormat.colorSpace;
-        swapchainCreateInfo->imageExtent = imageExtend;
-        swapchainCreateInfo->imageArrayLayers = 1;
-        swapchainCreateInfo->imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
-        swapchainCreateInfo->imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
-        swapchainCreateInfo->queueFamilyIndexCount = 0;
-        swapchainCreateInfo->pQueueFamilyIndices = NULL;
-        swapchainCreateInfo->preTransform = capabilities.currentTransform;
-        swapchainCreateInfo->compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
-        swapchainCreateInfo->presentMode = bestPresentMode;
-        swapchainCreateInfo->clipped = VK_TRUE;
-        swapchainCreateInfo->oldSwapchain = VK_NULL_HANDLE;
+    if (createInfo != NULL) {
+        createInfo->sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
+        createInfo->surface = surface;
+        createInfo->minImageCount = imageCount;
+        createInfo->imageFormat = bestFormat.format;
+        createInfo->imageColorSpace = bestFormat.colorSpace;
+        createInfo->imageExtent = imageExtent;
+        createInfo->imageArrayLayers = 1;
+        createInfo->imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+        createInfo->imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        createInfo->queueFamilyIndexCount = 0;
+        createInfo->pQueueFamilyIndices = NULL;
+        createInfo->preTransform = capabilities.currentTransform;
+        createInfo->compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
+        createInfo->presentMode = bestPresentMode;
+        createInfo->clipped = VK_TRUE;
+        createInfo->oldSwapchain = VK_NULL_HANDLE;
     }
     free(presentModes);
     free(formats);
     return swapChainAdequate;
 }
 
-bool isDeviceSuitable(VkPhysicalDevice device, VkSurfaceKHR *surface) {
+void createSwapchain(SurfaceAndDevice *surfaceAndDevice, SwapchainAndViews *swapchainAndViews) {
+    VkSwapchainCreateInfoKHR createInfo = {};
+    querySwapChainSupport(surfaceAndDevice->physicalDevice, surfaceAndDevice->surface, &createInfo);
+    swapchainAndViews->format = createInfo.imageFormat;
+    swapchainAndViews->imageExtent = createInfo.imageExtent;
+    if (vkCreateSwapchainKHR(surfaceAndDevice->device, &createInfo, NULL, &swapchainAndViews->swapchain) != VK_SUCCESS) {
+        fprintf(stderr, "ERROR Vulkan: failed to create swap chain\n");
+    } else {
+        printf("INFO Vulkan: created swapchain\n");
+    }
+}
+
+bool isDeviceSuitable(VkPhysicalDevice device, VkSurfaceKHR surface) {
     VkPhysicalDeviceProperties deviceProperties;
     VkPhysicalDeviceFeatures deviceFeatures;
     uint32_t graphicsFamilyIndex = 0;
@@ -302,31 +334,33 @@ bool isDeviceSuitable(VkPhysicalDevice device, VkSurfaceKHR *surface) {
     return queueAdequate && extensionsSupported && swapChainAdequate;
 }
 
-void pickPhysicalDevice(VkInstance *instance, VkSurfaceKHR *surface, VkPhysicalDevice *physicalDevice) {
-    *physicalDevice = VK_NULL_HANDLE;
+void pickPhysicalDevice(SurfaceAndDevice *surfaceAndDevice) {
+    surfaceAndDevice->physicalDevice = VK_NULL_HANDLE;
     uint32_t deviceCount = 0;
-    VkPhysicalDevice *devices;
-    vkEnumeratePhysicalDevices(*instance, &deviceCount, NULL);
+    VkPhysicalDevice *availableDevices;
+    vkEnumeratePhysicalDevices(surfaceAndDevice->instance, &deviceCount, NULL);
     if (deviceCount == 0) {
         fprintf(stderr, "ERROR Vulkan: failed to find GPUs with Vulkan support\n");
     }
-    devices = (VkPhysicalDevice *) malloc(deviceCount * sizeof(VkPhysicalDevice));
-    vkEnumeratePhysicalDevices(*instance, &deviceCount, devices);
+    availableDevices = (VkPhysicalDevice *) malloc(deviceCount * sizeof(VkPhysicalDevice));
+    vkEnumeratePhysicalDevices(surfaceAndDevice->instance, &deviceCount, availableDevices);
     for (uint32_t i = 0; i < deviceCount; ++i) {
-        if (isDeviceSuitable(devices[i], surface)) {
-            *physicalDevice = devices[i];
+        if (isDeviceSuitable(availableDevices[i], surfaceAndDevice->surface)) {
+            surfaceAndDevice->physicalDevice = availableDevices[i];
             break;
         }
     }
-    if (*physicalDevice == VK_NULL_HANDLE) {
+    if (surfaceAndDevice->physicalDevice == VK_NULL_HANDLE) {
         fprintf(stderr, "ERROR Vulkan: failed to find suitable GPU\n");
+    } else {
+        printf("INFO Vulkan: created physical device\n");
     }
-    free(devices);
+    free(availableDevices);
 }
 
-void createLogicalDevice(VkPhysicalDevice physicalDevice, VkSurfaceKHR *surface, VkDevice *logicalDevice, VkQueue *presentQueue) {
+void createLogicalDevice(SurfaceAndDevice *surfaceAndDevice, VkQueue *presentQueue) {
     uint32_t graphicsFamilyIndex = 0;
-    if (!findGraphicsQueueFamilyIndex(physicalDevice, surface, &graphicsFamilyIndex)) {
+    if (!findGraphicsQueueFamilyIndex(surfaceAndDevice->physicalDevice, surfaceAndDevice->surface, &graphicsFamilyIndex)) {
         fprintf(stderr, "ERROR Vulkan: Could not find graphics queue\n");
     }
     VkDeviceQueueCreateInfo queueCreateInfo = {};
@@ -349,26 +383,30 @@ void createLogicalDevice(VkPhysicalDevice physicalDevice, VkSurfaceKHR *surface,
     }
     createInfo.enabledExtensionCount = deviceExtensionsCount;
     createInfo.ppEnabledExtensionNames = deviceExtensions;
-    if (vkCreateDevice(physicalDevice, &createInfo, NULL, logicalDevice) != VK_SUCCESS) {
+    if (vkCreateDevice(surfaceAndDevice->physicalDevice, &createInfo, NULL, &surfaceAndDevice->device) != VK_SUCCESS) {
         fprintf(stderr, "ERROR Vulkan: failed to create logical device\n");
+    } else {
+        printf("INFO Vulkan: created logical device\n");
     }
-    vkGetDeviceQueue(*logicalDevice, graphicsFamilyIndex, 0, presentQueue);
+    vkGetDeviceQueue(surfaceAndDevice->device, graphicsFamilyIndex, 0, presentQueue);
 }
 
-void createSurface(VkInstance *instance, GLFWwindow **window, VkSurfaceKHR *surface) {
-    if (glfwCreateWindowSurface(*instance, *window, NULL, surface) != VK_SUCCESS) {
+void createSurface(GLFWwindow *window, SurfaceAndDevice *surfaceAndDevice) {
+    if (glfwCreateWindowSurface(surfaceAndDevice->instance, window, NULL, &surfaceAndDevice->surface) != VK_SUCCESS) {
         fprintf(stderr, "ERROR Vulkan: failed to create window surface\n");
+    } else {
+        printf("INFO Vulkan: created window surface\n");
     }
 }
 
-void createImageViews(VkDevice *device, VkImage *images, uint32_t imageCount, VkFormat imageFormat, VkImageView *imageViews) {
-    imageViews = (VkImageView *) malloc(imageCount * sizeof(VkImageView));
-    for (uint32_t i = 0; i < imageCount; ++i) {
+void createImageViews(VkDevice device, SwapchainAndViews *swapchainAndViews) {
+    swapchainAndViews->imageViews = (VkImageView *) malloc(swapchainAndViews->imageCount * sizeof(VkImageView));
+    for (uint32_t i = 0; i < swapchainAndViews->imageCount; ++i) {
         VkImageViewCreateInfo createInfo = {};
         createInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-        createInfo.image = images[i];
+        createInfo.image = swapchainAndViews->images[i];
         createInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-        createInfo.format = imageFormat;
+        createInfo.format = swapchainAndViews->format;
         createInfo.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
         createInfo.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
         createInfo.components.b = VK_COMPONENT_SWIZZLE_IDENTITY;
@@ -378,12 +416,17 @@ void createImageViews(VkDevice *device, VkImage *images, uint32_t imageCount, Vk
         createInfo.subresourceRange.levelCount = 1;
         createInfo.subresourceRange.baseArrayLayer = 0;
         createInfo.subresourceRange.layerCount = 1;
-        if (vkCreateImageView(*device, &createInfo, NULL, &imageViews[i]) != VK_SUCCESS) {
+        if (vkCreateImageView(device, &createInfo, NULL, &swapchainAndViews->imageViews[i]) != VK_SUCCESS) {
             fprintf(stderr, "ERROR Vulkan: failed to create image views");
         }
-        vkDestroyImageView(*device, imageViews[i], NULL);
     }
-    free(imageViews);
+}
+
+void destroyImageViews(VkDevice device, SwapchainAndViews *swapchainAndViews) {
+    for (uint32_t i = 0; i < swapchainAndViews->imageCount; ++i) {
+        vkDestroyImageView(device, swapchainAndViews->imageViews[i], NULL);
+    }
+    free(swapchainAndViews->imageViews);
 }
 
 VkShaderModule createShaderModule(VkDevice device, const uint32_t *shaderContent, size_t shaderSize) {
@@ -400,7 +443,7 @@ VkShaderModule createShaderModule(VkDevice device, const uint32_t *shaderContent
     return shaderModule;
 }
 
-void createGraphicsPipeline(VkDevice device, VkRenderPass *renderPass, VkExtent2D *imageExtent, VkPipelineLayout *pipelineLayout, VkPipeline *pipeline) {
+void createGraphicsPipeline(VkDevice device, VkExtent2D *imageExtent, Pipeline *pipeline) {
     uint32_t *vertexShader;
     size_t vertexShaderSize;
     VkShaderModule vertexShaderModule;
@@ -503,8 +546,10 @@ void createGraphicsPipeline(VkDevice device, VkRenderPass *renderPass, VkExtent2
     pipelineLayoutInfo.pSetLayouts = NULL;
     pipelineLayoutInfo.pushConstantRangeCount = 0;
     pipelineLayoutInfo.pPushConstantRanges = NULL;
-    if (vkCreatePipelineLayout(device, &pipelineLayoutInfo, NULL, pipelineLayout) != VK_SUCCESS) {
+    if (vkCreatePipelineLayout(device, &pipelineLayoutInfo, NULL, &pipeline->pipelineLayout) != VK_SUCCESS) {
         fprintf(stderr, "ERROR Vulkan: failed to create pipeline layout");
+    } else {
+        printf("INFO Vulkan: created pipeline layout\n");
     }
 
     VkGraphicsPipelineCreateInfo pipelineInfo = {};
@@ -519,15 +564,15 @@ void createGraphicsPipeline(VkDevice device, VkRenderPass *renderPass, VkExtent2
     pipelineInfo.pDepthStencilState = NULL;
     pipelineInfo.pColorBlendState = &colorBlending;
     pipelineInfo.pDynamicState = NULL;
-    pipelineInfo.layout = *pipelineLayout;
-    pipelineInfo.renderPass = *renderPass;
+    pipelineInfo.layout = pipeline->pipelineLayout;
+    pipelineInfo.renderPass = pipeline->renderPass;
     pipelineInfo.subpass = 0;
     pipelineInfo.basePipelineHandle = VK_NULL_HANDLE;
     pipelineInfo.basePipelineIndex = -1;
-    if (vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, NULL, pipeline) != VK_SUCCESS) {
+    if (vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, NULL, &pipeline->pipeline) != VK_SUCCESS) {
         fprintf(stderr, "ERROR Vulkan: failed to create graphics pipeline\n");
     } else {
-        printf("Vulkan: Successfully created graphics pipeline\n");
+        printf("INFO Vulkan: created graphics pipeline\n");
     }
 
     vkDestroyShaderModule(device, vertexShaderModule, NULL);
@@ -561,48 +606,112 @@ void createRenderPass(VkDevice device, VkFormat imageFormat, VkRenderPass *rende
     renderPassInfo.pSubpasses = &subpass;
     if (vkCreateRenderPass(device, &renderPassInfo, NULL, renderPass) != VK_SUCCESS) {
         fprintf(stderr, "ERROR Vulkan: failed to create render pass\n");
+    } else {
+        printf("INFO Vulkan: created render pass\n");
     }
 }
 
-void initVulkan(VkInstance *instance, GLFWwindow **window, VkDevice *logicalDevice, VkSurfaceKHR *surface, VkSwapchainKHR *swapchain) {
-    VkPhysicalDevice physicalDevice;
-    VkQueue presentQueue;
-    VkSwapchainCreateInfoKHR swapchainCreateInfo;
-    VkRenderPass renderPass;
-    VkPipelineLayout pipelineLayout;
-    VkPipeline pipeline;
-    createInstance(instance);
-    createSurface(instance, window, surface);
-    pickPhysicalDevice(instance, surface, &physicalDevice);
-    createLogicalDevice(physicalDevice, surface, logicalDevice, &presentQueue);
-    querySwapChainSupport(physicalDevice, surface, &swapchainCreateInfo);
-    if (vkCreateSwapchainKHR(*logicalDevice, &swapchainCreateInfo, NULL, swapchain) != VK_SUCCESS) {
-        fprintf(stderr, "ERROR Vulkan: failed to create swap chain\n");
+void createFramebuffers(VkDevice device, SwapchainAndViews *swapchainAndViews, Pipeline *pipeline, Buffers *buffers) {
+    buffers->framebuffers = (VkFramebuffer *) malloc(swapchainAndViews->imageCount * sizeof(VkFramebuffer));
+    for (uint32_t i = 0; i < swapchainAndViews->imageCount; ++i) {
+        VkImageView attachments[] = {
+            swapchainAndViews->imageViews[i]
+        };
+        VkFramebufferCreateInfo framebufferInfo = {};
+        framebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+        framebufferInfo.renderPass = pipeline->renderPass;
+        framebufferInfo.attachmentCount = 1;
+        framebufferInfo.pAttachments = attachments;
+        framebufferInfo.width = swapchainAndViews->imageExtent.width;
+        framebufferInfo.height = swapchainAndViews->imageExtent.height;
+        framebufferInfo.layers = 1;
+        if (vkCreateFramebuffer(device, &framebufferInfo, NULL, &buffers->framebuffers[i]) != VK_SUCCESS) {
+            fprintf(stderr, "ERROR Vulkan: failed to create framebuffer\n");
+        }
     }
-    createRenderPass(*logicalDevice, swapchainCreateInfo.imageFormat, &renderPass);
-    createGraphicsPipeline(*logicalDevice, &renderPass, &swapchainCreateInfo.imageExtent, &pipelineLayout, &pipeline);
+}
 
-    vkDestroyPipeline(*logicalDevice, pipeline, NULL);
-    vkDestroyPipelineLayout(*logicalDevice, pipelineLayout, NULL);
-    vkDestroyRenderPass(*logicalDevice, renderPass, NULL);
+void createSurfaceAndDevice(GLFWwindow *window, SurfaceAndDevice *surfaceAndDevice) {
+    VkQueue presentQueue;
+    createInstance(surfaceAndDevice);
+    createSurface(window, surfaceAndDevice);
+    pickPhysicalDevice(surfaceAndDevice);
+    createLogicalDevice(surfaceAndDevice, &presentQueue);
+}
+
+void destroySurfaceAndDevice(SurfaceAndDevice *surfaceAndDevice) {
+    vkDestroyDevice(surfaceAndDevice->device, NULL);
+    vkDestroySurfaceKHR(surfaceAndDevice->instance, surfaceAndDevice->surface, NULL);
+    vkDestroyInstance(surfaceAndDevice->instance, NULL);
+}
+
+void createSwapchainAndViews(SurfaceAndDevice *surfaceAndDevice, SwapchainAndViews *swapchainAndViews) {
+    VkSwapchainCreateInfoKHR swapchainCreateInfo;
+    createSwapchain(surfaceAndDevice, swapchainAndViews);
+    vkGetSwapchainImagesKHR(surfaceAndDevice->device, swapchainAndViews->swapchain, &swapchainAndViews->imageCount, NULL);
+    swapchainAndViews->images = (VkImage *) malloc(swapchainAndViews->imageCount * sizeof(VkImage));
+    vkGetSwapchainImagesKHR(surfaceAndDevice->device, swapchainAndViews->swapchain, &swapchainAndViews->imageCount, swapchainAndViews->images);
+    createImageViews(surfaceAndDevice->device, swapchainAndViews);
+}
+
+void destroySwapchainAndViews(VkDevice device, SwapchainAndViews *swapchainAndViews) {
+    destroyImageViews(device, swapchainAndViews);
+    free(swapchainAndViews->images);
+    vkDestroySwapchainKHR(device, swapchainAndViews->swapchain, NULL);
+}
+
+void createPipeline(VkDevice device, SwapchainAndViews *swapchainAndViews, Pipeline *pipeline) {
+    createRenderPass(device, swapchainAndViews->format, &pipeline->renderPass);
+    createGraphicsPipeline(device, &swapchainAndViews->imageExtent, pipeline);
+}
+
+void destroyPipeline(VkDevice device, Pipeline *pipeline) {
+    vkDestroyPipelineLayout(device, pipeline->pipelineLayout, NULL);
+    vkDestroyPipeline(device, pipeline->pipeline, NULL);
+    vkDestroyRenderPass(device, pipeline->renderPass, NULL);
+}
+
+void createCommandPool() {
+
+}
+
+void createBuffers(VkDevice device, SwapchainAndViews *swapchainAndViews, Pipeline *pipeline, Buffers *buffers) {
+    createFramebuffers(device, swapchainAndViews, pipeline, buffers);
+    createCommandPool();
+}
+
+void destroyBuffers(VkDevice device, uint32_t imageCount, Buffers *buffers) {
+    for (uint32_t i = 0; i < imageCount; ++i) {
+        vkDestroyFramebuffer(device, buffers->framebuffers[i], NULL);
+    }
+    free(buffers->framebuffers);
+}
+
+void initVulkan(GLFWwindow *window, SurfaceAndDevice *surfaceAndDevice, SwapchainAndViews *swapchainAndViews, Pipeline *pipeline, Buffers *buffers) {
+    createSurfaceAndDevice(window, surfaceAndDevice);
+    createSwapchainAndViews(surfaceAndDevice, swapchainAndViews);
+    createPipeline(surfaceAndDevice->device, swapchainAndViews, pipeline);
+    createBuffers(surfaceAndDevice->device, swapchainAndViews, pipeline, buffers);
+}
+
+void cleanUp(GLFWwindow *window, SurfaceAndDevice *surfaceAndDevice, SwapchainAndViews *swapchainAndViews, Pipeline *pipeline, Buffers *buffers) {
+    destroyBuffers(surfaceAndDevice->device, swapchainAndViews->imageCount, buffers);
+    destroyPipeline(surfaceAndDevice->device, pipeline);
+    destroySwapchainAndViews(surfaceAndDevice->device, swapchainAndViews);
+    destroySurfaceAndDevice(surfaceAndDevice);
+    glfwDestroyWindow(window);
+    glfwTerminate();
 }
 
 int main(const int argc, const char *argv[]) {
     GLFWwindow *window;
-    VkInstance vulkanInstance;
-    VkDevice device;
-    VkSurfaceKHR surface;
-    VkSwapchainKHR swapchain;
+    SurfaceAndDevice surfaceAndDevice;
+    SwapchainAndViews swapchainAndViews;
+    Pipeline pipeline;
+    Buffers buffers;
     initWindow(&window);
-    initVulkan(&vulkanInstance, &window, &device, &surface, &swapchain);
-
-    uint32_t imageCount = 0;
-    VkImage *images;
-    vkGetSwapchainImagesKHR(device, swapchain, &imageCount, NULL);
-    images = (VkImage *) malloc(imageCount * sizeof(VkImage));
-    vkGetSwapchainImagesKHR(device, swapchain, &imageCount, images);
-
+    initVulkan(window, &surfaceAndDevice, &swapchainAndViews, &pipeline, &buffers);
     mainLoop(window);
-    cleanUp(&window, &vulkanInstance, &device, &surface, &swapchain);
+    cleanUp(window, &surfaceAndDevice, &swapchainAndViews, &pipeline, &buffers);
     return 0;
 }
