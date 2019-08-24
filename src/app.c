@@ -93,10 +93,7 @@ void mainLoop(GLFWwindow *window) {
     }
 }
 
-void cleanUp(GLFWwindow **window, VkInstance *vulkanInstance, VkDevice *device, VkSurfaceKHR *surface, VkSwapchainKHR *swapchain, VkPipelineLayout *pipelineLayout, VkRenderPass *renderPass, VkPipeline *pipeline) {
-    vkDestroyPipeline(*device, *pipeline, NULL);
-    vkDestroyPipelineLayout(*device, *pipelineLayout, NULL);
-    vkDestroyRenderPass(*device, *renderPass, NULL);
+void cleanUp(GLFWwindow **window, VkInstance *vulkanInstance, VkDevice *device, VkSurfaceKHR *surface, VkSwapchainKHR *swapchain) {
     vkDestroySwapchainKHR(*device, *swapchain, NULL);
     vkDestroyDevice(*device, NULL);
     vkDestroySurfaceKHR(*vulkanInstance, *surface, NULL);
@@ -529,6 +526,8 @@ void createGraphicsPipeline(VkDevice device, VkRenderPass *renderPass, VkExtent2
     pipelineInfo.basePipelineIndex = -1;
     if (vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, NULL, pipeline) != VK_SUCCESS) {
         fprintf(stderr, "ERROR Vulkan: failed to create graphics pipeline\n");
+    } else {
+        printf("Vulkan: Successfully created graphics pipeline\n");
     }
 
     vkDestroyShaderModule(device, vertexShaderModule, NULL);
@@ -565,10 +564,13 @@ void createRenderPass(VkDevice device, VkFormat imageFormat, VkRenderPass *rende
     }
 }
 
-void initVulkan(VkInstance *instance, GLFWwindow **window, VkDevice *logicalDevice, VkSurfaceKHR *surface, VkSwapchainKHR *swapchain, VkPipelineLayout *pipelineLayout, VkRenderPass *renderPass, VkPipeline *pipeline) {
+void initVulkan(VkInstance *instance, GLFWwindow **window, VkDevice *logicalDevice, VkSurfaceKHR *surface, VkSwapchainKHR *swapchain) {
     VkPhysicalDevice physicalDevice;
     VkQueue presentQueue;
     VkSwapchainCreateInfoKHR swapchainCreateInfo;
+    VkRenderPass renderPass;
+    VkPipelineLayout pipelineLayout;
+    VkPipeline pipeline;
     createInstance(instance);
     createSurface(instance, window, surface);
     pickPhysicalDevice(instance, surface, &physicalDevice);
@@ -577,8 +579,12 @@ void initVulkan(VkInstance *instance, GLFWwindow **window, VkDevice *logicalDevi
     if (vkCreateSwapchainKHR(*logicalDevice, &swapchainCreateInfo, NULL, swapchain) != VK_SUCCESS) {
         fprintf(stderr, "ERROR Vulkan: failed to create swap chain\n");
     }
-    createRenderPass(*logicalDevice, swapchainCreateInfo.imageFormat, renderPass);
-    createGraphicsPipeline(*logicalDevice, renderPass, &swapchainCreateInfo.imageExtent, pipelineLayout, pipeline);
+    createRenderPass(*logicalDevice, swapchainCreateInfo.imageFormat, &renderPass);
+    createGraphicsPipeline(*logicalDevice, &renderPass, &swapchainCreateInfo.imageExtent, &pipelineLayout, &pipeline);
+
+    vkDestroyPipeline(*logicalDevice, pipeline, NULL);
+    vkDestroyPipelineLayout(*logicalDevice, pipelineLayout, NULL);
+    vkDestroyRenderPass(*logicalDevice, renderPass, NULL);
 }
 
 int main(const int argc, const char *argv[]) {
@@ -587,11 +593,8 @@ int main(const int argc, const char *argv[]) {
     VkDevice device;
     VkSurfaceKHR surface;
     VkSwapchainKHR swapchain;
-    VkRenderPass renderPass;
-    VkPipelineLayout pipelineLayout;
-    VkPipeline pipeline;
     initWindow(&window);
-    initVulkan(&vulkanInstance, &window, &device, &surface, &swapchain, &pipelineLayout, &renderPass, &pipeline);
+    initVulkan(&vulkanInstance, &window, &device, &surface, &swapchain);
 
     uint32_t imageCount = 0;
     VkImage *images;
@@ -600,6 +603,6 @@ int main(const int argc, const char *argv[]) {
     vkGetSwapchainImagesKHR(device, swapchain, &imageCount, images);
 
     mainLoop(window);
-    cleanUp(&window, &vulkanInstance, &device, &surface, &swapchain, &pipelineLayout, &renderPass, &pipeline);
+    cleanUp(&window, &vulkanInstance, &device, &surface, &swapchain);
     return 0;
 }
