@@ -52,7 +52,16 @@ typedef struct {
     VkFramebuffer *framebuffers;
     VkCommandPool commandPool;
     VkCommandBuffer *commandBuffers;
+    VkSemaphore imageAvailableSemaphore;
+    VkSemaphore renderFinishedSemaphore;
 } Buffers;
+
+typedef struct {
+    SurfaceAndDevice *surfaceAndDevice;
+    SwapchainAndViews *swapchainAndViews;
+    Pipeline *pipeline;
+    Buffers *buffers;
+} VulkanStuff;
 
 static void error_callback(int error, const char *description) {
     fprintf(stderr, "Error: %s\n", description);
@@ -109,6 +118,7 @@ void initWindow(GLFWwindow **window) {
     printf("GLFW library string:  %s\n", glfwGetVersionString());
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
     glfwWindowHint(GLFW_FOCUSED, GLFW_FALSE);
+    glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
     *window = glfwCreateWindow(WIDTH, HEIGHT, "Vulkan Playground", NULL, NULL);
     if (!window) {
         glfwTerminate();
@@ -117,10 +127,46 @@ void initWindow(GLFWwindow **window) {
     glfwSetKeyCallback(*window, key_callback);
 }
 
-void mainLoop(GLFWwindow *window) {
+void drawFrame(VulkanStuff *vulkan) {
+    uint32_t imageIndex;
+    VkDevice device = vulkan->surfaceAndDevice->device;
+    VkSwapchainKHR swapchain = vulkan->swapchainAndViews->swapchain;
+    vkAcquireNextImageKHR(device, swapchain, UINT64_MAX, vulkan->buffers->imageAvailableSemaphore, VK_NULL_HANDLE, &imageIndex);
+    
+    VkSubmitInfo submitInfo = {};
+    submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    VkSemaphore waitSemaphores[] = {vulkan->buffers->imageAvailableSemaphore};
+    VkPipelineStageFlags waitStages[] = {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
+    submitInfo.waitSemaphoreCount = 1;
+    submitInfo.pWaitSemaphores = waitSemaphores;
+    submitInfo.pWaitDstStageMask = waitStages;
+    submitInfo.commandBufferCount = 1;
+    submitInfo.pCommandBuffers = &vulkan->buffers->commandBuffers[imageIndex];
+    VkSemaphore signalSemaphores[] = {vulkan->buffers->renderFinishedSemaphore};
+    submitInfo.signalSemaphoreCount = 1;
+    submitInfo.pSignalSemaphores = signalSemaphores;
+    if (vkQueueSubmit(vulkan->surfaceAndDevice->queue, 1, &submitInfo, VK_NULL_HANDLE) != VK_SUCCESS) {
+        fprintf(stderr, "ERROR Vulkan: failed to submit draw command buffer\n");
+    }
+
+    VkPresentInfoKHR presentInfo = {};
+    presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+    presentInfo.waitSemaphoreCount = 1;
+    presentInfo.pWaitSemaphores = signalSemaphores;
+    VkSwapchainKHR swapChains[] = {swapchain};
+    presentInfo.swapchainCount = 1;
+    presentInfo.pSwapchains = swapChains;
+    presentInfo.pImageIndices = &imageIndex;
+    presentInfo.pResults = NULL;
+    vkQueuePresentKHR(vulkan->surfaceAndDevice->queue, &presentInfo);
+}
+
+void mainLoop(GLFWwindow *window, VulkanStuff *vulkan) {
     while (!glfwWindowShouldClose(window)) {
         glfwPollEvents();
+        drawFrame(vulkan);
     }
+    vkDeviceWaitIdle(vulkan->surfaceAndDevice->device);
 }
 
 bool checkValidationLayerSupport() {
@@ -599,12 +645,21 @@ void createRenderPass(VkDevice device, VkFormat imageFormat, VkRenderPass *rende
     subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
     subpass.colorAttachmentCount = 1;
     subpass.pColorAttachments = &colorAttachmentRef;
+    VkSubpassDependency dependency = {};
+    dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
+    dependency.dstSubpass = 0;
+    dependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    dependency.srcAccessMask = 0;
+    dependency.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    dependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
     VkRenderPassCreateInfo renderPassInfo = {};
     renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
     renderPassInfo.attachmentCount = 1;
     renderPassInfo.pAttachments = &colorAttachment;
     renderPassInfo.subpassCount = 1;
     renderPassInfo.pSubpasses = &subpass;
+    renderPassInfo.dependencyCount = 1;
+    renderPassInfo.pDependencies = &dependency;
     if (vkCreateRenderPass(device, &renderPassInfo, NULL, renderPass) != VK_SUCCESS) {
         fprintf(stderr, "ERROR Vulkan: failed to create render pass\n");
     } else {
@@ -724,13 +779,27 @@ void createCommandBuffers(VkDevice device, SwapchainAndViews *swapchainAndViews,
     }
 }
 
+void createSemaphores(VkDevice device, Buffers *buffers) {
+    VkSemaphoreCreateInfo semaphoreInfo = {};
+    semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+    if (vkCreateSemaphore(device, &semaphoreInfo, NULL, &buffers->imageAvailableSemaphore) != VK_SUCCESS ||
+        vkCreateSemaphore(device, &semaphoreInfo, NULL, &buffers->renderFinishedSemaphore) != VK_SUCCESS) {
+        fprintf(stderr, "ERROR Vulkan: failed to create semaphores\n");
+    } else {
+        printf("INFO Vulkan: created semaphores\n");
+    }
+}
+
 void createBuffers(SurfaceAndDevice *surfaceAndDevice, SwapchainAndViews *swapchainAndViews, Pipeline *pipeline, Buffers *buffers) {
     createFramebuffers(surfaceAndDevice->device, swapchainAndViews, pipeline, buffers);
     createCommandPool(surfaceAndDevice, buffers);
     createCommandBuffers(surfaceAndDevice->device, swapchainAndViews, pipeline, buffers);
+    createSemaphores(surfaceAndDevice->device, buffers);
 }
 
 void destroyBuffers(VkDevice device, uint32_t imageCount, Buffers *buffers) {
+    vkDestroySemaphore(device, buffers->renderFinishedSemaphore, NULL);
+    vkDestroySemaphore(device, buffers->imageAvailableSemaphore, NULL);
     free(buffers->commandBuffers);
     vkDestroyCommandPool(device, buffers->commandPool, NULL);
     for (uint32_t i = 0; i < imageCount; ++i) {
@@ -761,9 +830,10 @@ int main(const int argc, const char *argv[]) {
     SwapchainAndViews swapchainAndViews;
     Pipeline pipeline;
     Buffers buffers;
+    VulkanStuff vulkan = {&surfaceAndDevice, &swapchainAndViews, &pipeline, &buffers};
     initWindow(&window);
     initVulkan(window, &surfaceAndDevice, &swapchainAndViews, &pipeline, &buffers);
-    mainLoop(window);
+    mainLoop(window, &vulkan);
     cleanUp(window, &surfaceAndDevice, &swapchainAndViews, &pipeline, &buffers);
     return 0;
 }
