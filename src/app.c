@@ -29,6 +29,8 @@ typedef struct {
     VkDevice device;
     VkPhysicalDevice physicalDevice;
     VkSurfaceKHR surface;
+    VkQueue queue;
+    uint32_t queueIndex;
 } SurfaceAndDevice;
 
 typedef struct {
@@ -49,6 +51,7 @@ typedef struct {
 typedef struct {
     VkFramebuffer *framebuffers;
     VkCommandPool commandPool;
+    VkCommandBuffer *commandBuffers;
 } Buffers;
 
 static void error_callback(int error, const char *description) {
@@ -186,7 +189,7 @@ bool findGraphicsQueueFamilyIndex(VkPhysicalDevice device, VkSurfaceKHR surface,
         vkGetPhysicalDeviceSurfaceSupportKHR(device, i, surface, &presentSupport);
         if (queueFamilies[i].queueCount > 0 && queueFamilies[i].queueFlags & VK_QUEUE_GRAPHICS_BIT && presentSupport) {
             graphicsQueueSupported = true;
-            *graphicsFamilyIndex = i;
+            if (graphicsFamilyIndex != NULL) *graphicsFamilyIndex = i;
             break;
         }
     }
@@ -321,8 +324,7 @@ void createSwapchain(SurfaceAndDevice *surfaceAndDevice, SwapchainAndViews *swap
 bool isDeviceSuitable(VkPhysicalDevice device, VkSurfaceKHR surface) {
     VkPhysicalDeviceProperties deviceProperties;
     VkPhysicalDeviceFeatures deviceFeatures;
-    uint32_t graphicsFamilyIndex = 0;
-    bool queueAdequate = findGraphicsQueueFamilyIndex(device, surface, &graphicsFamilyIndex);
+    bool queueAdequate = findGraphicsQueueFamilyIndex(device, surface, NULL);
     bool extensionsSupported = checkDeviceExtensionSupport(device);
     bool swapChainAdequate = false;
     if (extensionsSupported) {
@@ -358,14 +360,13 @@ void pickPhysicalDevice(SurfaceAndDevice *surfaceAndDevice) {
     free(availableDevices);
 }
 
-void createLogicalDevice(SurfaceAndDevice *surfaceAndDevice, VkQueue *presentQueue) {
-    uint32_t graphicsFamilyIndex = 0;
-    if (!findGraphicsQueueFamilyIndex(surfaceAndDevice->physicalDevice, surfaceAndDevice->surface, &graphicsFamilyIndex)) {
+void createLogicalDevice(SurfaceAndDevice *surfaceAndDevice) {
+    if (!findGraphicsQueueFamilyIndex(surfaceAndDevice->physicalDevice, surfaceAndDevice->surface, &surfaceAndDevice->queueIndex)) {
         fprintf(stderr, "ERROR Vulkan: Could not find graphics queue\n");
     }
     VkDeviceQueueCreateInfo queueCreateInfo = {};
     queueCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
-    queueCreateInfo.queueFamilyIndex = graphicsFamilyIndex;
+    queueCreateInfo.queueFamilyIndex = surfaceAndDevice->queueIndex;
     queueCreateInfo.queueCount = 1;
     float queuePriority = 1.0f;
     queueCreateInfo.pQueuePriorities = &queuePriority;
@@ -388,7 +389,7 @@ void createLogicalDevice(SurfaceAndDevice *surfaceAndDevice, VkQueue *presentQue
     } else {
         printf("INFO Vulkan: created logical device\n");
     }
-    vkGetDeviceQueue(surfaceAndDevice->device, graphicsFamilyIndex, 0, presentQueue);
+    vkGetDeviceQueue(surfaceAndDevice->device, surfaceAndDevice->queueIndex, 0, &surfaceAndDevice->queue);
 }
 
 void createSurface(GLFWwindow *window, SurfaceAndDevice *surfaceAndDevice) {
@@ -632,11 +633,10 @@ void createFramebuffers(VkDevice device, SwapchainAndViews *swapchainAndViews, P
 }
 
 void createSurfaceAndDevice(GLFWwindow *window, SurfaceAndDevice *surfaceAndDevice) {
-    VkQueue presentQueue;
     createInstance(surfaceAndDevice);
     createSurface(window, surfaceAndDevice);
     pickPhysicalDevice(surfaceAndDevice);
-    createLogicalDevice(surfaceAndDevice, &presentQueue);
+    createLogicalDevice(surfaceAndDevice);
 }
 
 void destroySurfaceAndDevice(SurfaceAndDevice *surfaceAndDevice) {
@@ -671,16 +671,68 @@ void destroyPipeline(VkDevice device, Pipeline *pipeline) {
     vkDestroyRenderPass(device, pipeline->renderPass, NULL);
 }
 
-void createCommandPool() {
-
+void createCommandPool(SurfaceAndDevice *surfaceAndDevice, Buffers *buffers) {
+    VkCommandPoolCreateInfo poolInfo = {};
+    poolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+    poolInfo.queueFamilyIndex = surfaceAndDevice->queueIndex;
+    poolInfo.flags = 0;
+    if (vkCreateCommandPool(surfaceAndDevice->device, &poolInfo, NULL, &buffers->commandPool) != VK_SUCCESS) {
+        fprintf(stderr, "ERROR Vulkan: failed to create command pool\n");
+    } else {
+        printf("INFO Vulkan: created command pool\n");
+    }
 }
 
-void createBuffers(VkDevice device, SwapchainAndViews *swapchainAndViews, Pipeline *pipeline, Buffers *buffers) {
-    createFramebuffers(device, swapchainAndViews, pipeline, buffers);
-    createCommandPool();
+void createCommandBuffers(VkDevice device, SwapchainAndViews *swapchainAndViews, Pipeline *pipeline, Buffers *buffers) {
+    buffers->commandBuffers = (VkCommandBuffer *) malloc(swapchainAndViews->imageCount * sizeof(VkCommandBuffer));
+    VkCommandBufferAllocateInfo allocInfo = {};
+    allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    allocInfo.commandPool = buffers->commandPool;
+    allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    allocInfo.commandBufferCount = swapchainAndViews->imageCount;
+    if (vkAllocateCommandBuffers(device, &allocInfo, buffers->commandBuffers) != VK_SUCCESS) {
+        fprintf(stderr, "ERROR Vulkan: failed to allocate command buffers\n");
+    } else {
+        printf("INFO Vulkan: created command buffers\n");
+    }
+
+    for (size_t i = 0; i < swapchainAndViews->imageCount; ++i) {
+        VkCommandBufferBeginInfo beginInfo = {};
+        beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        beginInfo.flags = 0;
+        beginInfo.pInheritanceInfo = NULL;
+        if (vkBeginCommandBuffer(buffers->commandBuffers[i], &beginInfo) != VK_SUCCESS) {
+            fprintf(stderr, "ERROR Vulkan: failed to begin recording command buffer\n");
+        }
+        VkRenderPassBeginInfo renderPassInfo = {};
+        renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+        renderPassInfo.renderPass = pipeline->renderPass;
+        renderPassInfo.framebuffer = buffers->framebuffers[i];
+        renderPassInfo.renderArea.offset.x = 0;
+        renderPassInfo.renderArea.offset.y = 0;
+        renderPassInfo.renderArea.extent = swapchainAndViews->imageExtent;
+        VkClearValue clearColor = {0.0f, 0.0f, 0.0f, 1.0f};
+        renderPassInfo.clearValueCount = 1;
+        renderPassInfo.pClearValues = &clearColor;
+        vkCmdBeginRenderPass(buffers->commandBuffers[i], &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
+            vkCmdBindPipeline(buffers->commandBuffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline->pipeline);
+            vkCmdDraw(buffers->commandBuffers[i], 3, 1, 0, 0);
+        vkCmdEndRenderPass(buffers->commandBuffers[i]);
+        if (vkEndCommandBuffer(buffers->commandBuffers[i]) != VK_SUCCESS) {
+            fprintf(stderr, "ERROR Vulkan: failed to record command buffer\n");
+        }
+    }
+}
+
+void createBuffers(SurfaceAndDevice *surfaceAndDevice, SwapchainAndViews *swapchainAndViews, Pipeline *pipeline, Buffers *buffers) {
+    createFramebuffers(surfaceAndDevice->device, swapchainAndViews, pipeline, buffers);
+    createCommandPool(surfaceAndDevice, buffers);
+    createCommandBuffers(surfaceAndDevice->device, swapchainAndViews, pipeline, buffers);
 }
 
 void destroyBuffers(VkDevice device, uint32_t imageCount, Buffers *buffers) {
+    free(buffers->commandBuffers);
+    vkDestroyCommandPool(device, buffers->commandPool, NULL);
     for (uint32_t i = 0; i < imageCount; ++i) {
         vkDestroyFramebuffer(device, buffers->framebuffers[i], NULL);
     }
@@ -691,7 +743,7 @@ void initVulkan(GLFWwindow *window, SurfaceAndDevice *surfaceAndDevice, Swapchai
     createSurfaceAndDevice(window, surfaceAndDevice);
     createSwapchainAndViews(surfaceAndDevice, swapchainAndViews);
     createPipeline(surfaceAndDevice->device, swapchainAndViews, pipeline);
-    createBuffers(surfaceAndDevice->device, swapchainAndViews, pipeline, buffers);
+    createBuffers(surfaceAndDevice, swapchainAndViews, pipeline, buffers);
 }
 
 void cleanUp(GLFWwindow *window, SurfaceAndDevice *surfaceAndDevice, SwapchainAndViews *swapchainAndViews, Pipeline *pipeline, Buffers *buffers) {
