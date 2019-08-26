@@ -23,6 +23,7 @@ const char *const deviceExtensions[] = {
 };
 const int WIDTH = 800;
 const int HEIGHT = 600;
+const int MAX_FRAMES_IN_FLIGHT = 2;
 
 typedef struct {
     VkInstance instance;
@@ -159,6 +160,7 @@ void drawFrame(VulkanStuff *vulkan) {
     presentInfo.pImageIndices = &imageIndex;
     presentInfo.pResults = NULL;
     vkQueuePresentKHR(vulkan->surfaceAndDevice->queue, &presentInfo);
+    vkQueueWaitIdle(vulkan->surfaceAndDevice->queue);
 }
 
 void mainLoop(GLFWwindow *window, VulkanStuff *vulkan) {
